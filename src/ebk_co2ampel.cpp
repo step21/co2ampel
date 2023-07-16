@@ -2,7 +2,7 @@
 #include "MHZ19.h"
 #include "SSD1306Wire.h"
 #include <Adafruit_NeoPixel.h>
-#include "fonts-custom.h"
+#include "fonts-custom-higher.h"
 #include <Preferences.h>
 #include "uptime_formatter.h"
 
@@ -42,7 +42,7 @@ HardwareSerial mySerial(1);
 SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN);
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
  
-String ampelversion = "0.50";
+String ampelversion = "0.51";
 
 int lastvals[120];
 int dheight;
@@ -82,11 +82,13 @@ void toggleBootMode(int bootMode) {
 
 int readCO2(){
   static int co2=400;
+  static int celsius;
   static unsigned long getDataTimer = 0;
   
   if (millis() - getDataTimer >= CO2_INTERVAL) {
     // Neuen CO2 Wert lesen
     co2 = myMHZ19.getCO2();
+    celsius = myMHZ19.getTemperature();
     // Alle Werte in der Messwertliste um eins verschieben
     for (int x = 1; x <= 119; x = x + 1) {
       lastvals[x - 1] = lastvals[x];
@@ -98,12 +100,12 @@ int readCO2(){
     Serial.print("Neue Messung - Aktueller CO2-Wert: ");
     Serial.print(co2);
     Serial.print("; Background CO2: " + String(myMHZ19.getBackgroundCO2()));
-    Serial.print("; Temperatur: " + String(myMHZ19.getTemperature()) + " Temperature Adjustment: " + String(myMHZ19.getTempAdjustment()));
+    Serial.print("; Temperatur: " + String(celsius) + " Temperature Adjustment: " + String(myMHZ19.getTempAdjustment()));
     Serial.println("; uptime: " + uptime_formatter::getUptime());
 
     getDataTimer = millis();
   }
-  return co2;
+  return (co2, celsius);
 }
 
 void setup() {
@@ -260,7 +262,7 @@ void calibrateCO2() {
   display.clear();
 }
 
-void updateDisplayCO2(int co2) {
+void updateDisplayCO2(int co2, int temp) {
   static unsigned long getUpdateTimer = 0;
   
   if (millis() - getUpdateTimer >= DISPLAY_INTERVAL) {
@@ -275,11 +277,15 @@ void updateDisplayCO2(int co2) {
       }
     }
     // Aktuellen CO2 Wert ausgeben
-    display.setFont(Cousine_Regular_54);
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64 ,0 , String(co2));
-    display.display();
-    
+    display.setFont(Cousine_Regular_36);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.drawString(0 ,0 , String(co2));
+    //display.display();
+
+    // Aktuelle Temperatur ausgeben NB: Mhz19b Temperatur is not very accurate
+    //display.setTextAlignment(TEXT_ALIGN_RIGHT);
+    display.drawString(64, 0, String(temp));
+    display.display(); 
     // Fertig mit update; Zeitpunkt für das nächste Update speichern
     getUpdateTimer = millis();
   }
@@ -289,7 +295,7 @@ void loop() {
   static unsigned long calibrationStart = 0;
   static int countdown = 0;
   static int safezone = false;
-
+  int celsius;
   int co2;
   
   // Nur für die ersten 10 Sekunden wichtig,
@@ -326,10 +332,11 @@ void loop() {
       }
     } else {
       // Achtung: readCO2() liefer nur alle "INTERVAL" ms ein neuen Wert, der alte wird aber zwischengespeichert
-      co2 = readCO2();
+      // this is probably broken...
+      co2, celsius = readCO2();
   
       // Update Display
-      updateDisplayCO2(co2);
+      updateDisplayCO2(co2, celsius);
 
       // Farbe des LED-Rings setzen
       if(currentBootMode == BOOT_NORMAL) { set_led_color(co2); }
