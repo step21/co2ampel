@@ -2,11 +2,12 @@
 #include "MHZ19.h"
 #include "SSD1306Wire.h"
 #include <Adafruit_NeoPixel.h>
+#include <DHT_Async.h>
 #include "fonts-custom-higher.h"
 #include <Preferences.h>
 #include "uptime_formatter.h"
 
-// Grenzwerte für die CO2 Werte für grün und gelb, alles überhalb davon bedeutet rot
+// CO2 limits for green and yellow lights. Anything else means red
 #define GREEN_CO2 800
 #define YELLOW_CO2 1000
 
@@ -17,31 +18,36 @@
 // Dauer der Kalibrierungsphase in Milisekunden
 #define CAL_INTERVAL 180*1000
 
-// Boot-Mode Konstanten
+// Boot-Mode Constants
 #define BOOT_NORMAL    42
 #define BOOT_CALIBRATE 23
 #define BOOT_UNKNOWN   69
 
-// Pins für den MH-Z19b
+// Pins for the MH-Z19b
 #define RX_PIN 16
 #define TX_PIN 17
 
-// Pins für das SD1306 OLED-Display
+// Pins for the SD1306 OLED-Display
 #define SDA_PIN 21
 #define SCL_PIN 22
 
-// Pin für den LED-Ring
+// Pin for the LED-Ring
 #define LED_PIN 4
 
-// Anzahl der angeschlossenen LEDs am Ring
+// Number of the connected LEDs of the Ring
 #define NUMPIXELS 8
+
+// Definition for DHT type
+#define DHT_SENSOR_TYPE DHT_TYPE_22
+static const int DHT_SENSOR_PIN = 18;
 
 Preferences preferences;
 MHZ19 myMHZ19;
 HardwareSerial mySerial(1);
 SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN);
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
- 
+DHT_Async dht_sensor(DHT_SENSOR_PIN, DHT_SENSOR_TYPE);
+
 String ampelversion = "0.51";
 
 int lastvals[120];
@@ -50,7 +56,7 @@ int currentBootMode;
 
 
 void setBootMode(int bootMode) {
-  if(bootMode == BOOT_NORMAL) { 
+  if(bootMode == BOOT_NORMAL) {
     Serial.println("Startmodus nächster Reboot: Messmodus");
     preferences.putUInt("cal", bootMode);
     if (bootMode != preferences.getUInt("cal", BOOT_UNKNOWN)) Serial.println("Konnte neuen Bootmodus nicht schreiben :-(");
@@ -61,7 +67,7 @@ void setBootMode(int bootMode) {
     if (bootMode != preferences.getUInt("cal", BOOT_UNKNOWN)) Serial.println("Konnte neuen Bootmodus nicht schreiben :-(");
   } else {
     Serial.println("Unerwarteter Boot-Mode soll gespeichert werden. Abgebrochen.");
-  } 
+  }
 }
 
 void toggleBootMode(int bootMode) {
@@ -84,7 +90,7 @@ int readCO2(){
   static int co2=400;
   static int celsius;
   static unsigned long getDataTimer = 0;
-  
+
   if (millis() - getDataTimer >= CO2_INTERVAL) {
     // Neuen CO2 Wert lesen
     co2 = myMHZ19.getCO2();
@@ -95,7 +101,7 @@ int readCO2(){
     }
     // Aktuellen Messer am Ende einfügen
     lastvals[119] = co2;
-   
+
     // Ein wenig Debug-Ausgabe
     Serial.print("Neue Messung - Aktueller CO2-Wert: ");
     Serial.print(co2);
@@ -108,22 +114,40 @@ int readCO2(){
   return (co2, celsius);
 }
 
+/*
+ * Poll for a measurement, keeping the state machine alive.  Returns
+ * true if a measurement is available.
+ */
+static bool measure_environment(float *temperature, float *humidity) {
+    static unsigned long measurement_timestamp = millis();
+
+    /* Measure once every four seconds. */
+    if (millis() - measurement_timestamp > 4000ul) {
+        if (dht_sensor.measure(temperature, humidity)) {
+            measurement_timestamp = millis();
+            return (true);
+        }
+    }
+
+    return (false);
+}
+
 void setup() {
   Serial.begin(115200);
-  Serial.println("Starte...");
+  Serial.println("Starting...");
   Serial.print("CO2-Ampel Firmware: ");Serial.println(ampelversion);
 
   // Ab hier Bootmodus initialisieren und festlegen
   preferences.begin("co2", false);
-  currentBootMode = preferences.getUInt("cal", BOOT_UNKNOWN);  // Aktuellen Boot-Mode lesen und speichern
+  currentBootMode = preferences.getUInt("cal", BOOT_UNKNOWN);  // Read and save current boot mode
 
   switch(currentBootMode){
     case BOOT_CALIBRATE:
-      Serial.println("Startmodus Aktuell: Kalibrierungsmodus");
+      Serial.println("Current boot mode: Calibration mode");
       toggleBootMode(currentBootMode); // beim nächsten boot ggfs. im anderen modus starten, wird später nach 10 Sekunden zurückgesetzt
       break;
     case BOOT_NORMAL:
-      Serial.println("Startmodus Aktuell: Messmodus");
+      Serial.println("Current boot mode: Measuring mode");
       toggleBootMode(currentBootMode); // beim nächsten boot ggfs. im anderen modus starten, wird später nach 10 Sekunden zurückgesetzt
       break;
     default:
@@ -152,32 +176,36 @@ void setup() {
   }
   display.display();
   dheight = display.getHeight();
-  
+
   // Ab hier Sensor einrichten
   mySerial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
   myMHZ19.begin(mySerial);
   myMHZ19.autoCalibration(false); // "Automatic Baseline Calibration" (ABC) erstmal aus
-  char myVersion[4];          
+  char myVersion[4];
   myMHZ19.getVersion(myVersion);
   Serial.print("\nMH-Z19b Firmware Version: ");
   Serial.print(myVersion[0]);Serial.print(myVersion[1]);;Serial.print(".");Serial.print(myVersion[2]);Serial.println(myVersion[3]);
-  Serial.print("Range: ");  Serial.println(myMHZ19.getRange());   
+  Serial.print("Range: ");  Serial.println(myMHZ19.getRange());
   Serial.print("Background CO2: ");  Serial.println(myMHZ19.getBackgroundCO2());
-  Serial.print("Temperature Cal: ");  Serial.println(myMHZ19.getTempAdjustment());
+  Serial.print("Temperature ADJ: ");  Serial.println(myMHZ19.getTempAdjustment());
   Serial.print("ABC Status: "); myMHZ19.getABC() ? Serial.println("ON") :  Serial.println("OFF");
   Serial.print("read EEPROM value: ");  Serial.println(currentBootMode);
   Serial.print("First CO2 value (should be 400): ");  Serial.println(readCO2());
- 
+
+  // Temperature Sensor
+  Serial.print("Temperature");
+  Serial.print("Humidity");
+
   // Liste der Messwerte mit "-1" befüllen ("-1" wird beinm Graph nicht gezeichnet)
   for (int x = 0; x <= 119; x = x + 1) {
     lastvals[x] = -1;
   }
- 
+
   // Ab hier LED-Ring konfigurien
   pixels.begin();
   pixels.clear();
   pixels.fill(pixels.Color(0,0,0));
-  pixels.show(); 
+  pixels.show();
 
   // Wir lesen schonmal einen CO2 Sensorwert, da die erste Werte meist Müll sind
   delay(5000);
@@ -203,7 +231,7 @@ void set_led_color(int co2) {
   } else {
     blinkState+=blinkDirection;
     if( (blinkState<90) & (blinkState>0) ) {
-      pixels.fill(pixels.Color(blinkState,00,0));  
+      pixels.fill(pixels.Color(blinkState,00,0));
     }
     else if (blinkState==90) {
       blinkDirection=0; blinkOn++;
@@ -245,14 +273,14 @@ void calibrateCO2() {
   display.drawString(64, 44, "Neustarten");
   display.display();
   Serial.println("Kalibrierung startet nun");
-  
+
   myMHZ19.setRange(5000);
   delay(500);
   myMHZ19.calibrate();
   delay(500);
   myMHZ19.autoCalibration(false);
   delay(500);
-  
+
   display.clear();
   display.setFont(ArialMT_Plain_24);
   display.drawString(64, 0, "Fertig!");
@@ -264,7 +292,7 @@ void calibrateCO2() {
 
 void updateDisplayCO2(int co2, int temp) {
   static unsigned long getUpdateTimer = 0;
-  
+
   if (millis() - getUpdateTimer >= DISPLAY_INTERVAL) {
     // Display löschen und alles neu schreiben/zeichnen
     display.clear();
@@ -285,7 +313,7 @@ void updateDisplayCO2(int co2, int temp) {
     // Aktuelle Temperatur ausgeben NB: Mhz19b Temperatur is not very accurate
     //display.setTextAlignment(TEXT_ALIGN_RIGHT);
     display.drawString(64, 0, String(temp));
-    display.display(); 
+    display.display();
     // Fertig mit update; Zeitpunkt für das nächste Update speichern
     getUpdateTimer = millis();
   }
@@ -296,17 +324,19 @@ void loop() {
   static int countdown = 0;
   static int safezone = false;
   int celsius;
+  float celsiusdht;
   int co2;
-  
+  float humidity;
+
   // Nur für die ersten 10 Sekunden wichtig,
   if ( (!safezone) & (millis() > 10000) ) {
-    Serial.println("=== 10 Sekunden im Betrieb, nächster Boot im Messmodus ===");
-    setBootMode(BOOT_NORMAL); 
+    Serial.println("=== 10 Seconds uptime, next boot in measuring mode ===");
+    setBootMode(BOOT_NORMAL);
     safezone = true;
   }
-  
-  if (safezone) {    
-    if (currentBootMode == BOOT_CALIBRATE){          
+
+  if (safezone) {
+    if (currentBootMode == BOOT_CALIBRATE){
       if (millis() - calibrationStart <= CAL_INTERVAL) {
         rainbow(10);
         countdown = ((calibrationStart + CAL_INTERVAL) - millis()) / 1000;
@@ -316,14 +346,14 @@ void loop() {
         display.setFont(ArialMT_Plain_16);
         display.setTextAlignment(TEXT_ALIGN_LEFT);
         display.drawString(0, 0, "Kalibrierung");
-        
+
         display.setFont(ArialMT_Plain_10);;
         display.drawString(0, 17, "Abbrechen durch Neustart");
-        
+
         display.setTextAlignment(TEXT_ALIGN_CENTER);
         display.setFont(ArialMT_Plain_16);;
         display.drawString(64, 35, "Noch: " + String(countdown) + " Sek.");
-        
+
         display.display();
         }
       else if (millis() - calibrationStart >= CAL_INTERVAL) {
@@ -334,9 +364,15 @@ void loop() {
       // Achtung: readCO2() liefer nur alle "INTERVAL" ms ein neuen Wert, der alte wird aber zwischengespeichert
       // this is probably broken...
       co2, celsius = readCO2();
-  
+      if (measure_environment(&celsiusdht, &humidity)) {
+        Serial.print("T = ");
+        Serial.print(celsiusdht, 1);
+        Serial.print(" deg. C, H = ");
+        Serial.print(humidity, 1);
+        Serial.println("%");
+      }
       // Update Display
-      updateDisplayCO2(co2, celsius);
+      updateDisplayCO2(co2, celsiusdht);
 
       // Farbe des LED-Rings setzen
       if(currentBootMode == BOOT_NORMAL) { set_led_color(co2); }
